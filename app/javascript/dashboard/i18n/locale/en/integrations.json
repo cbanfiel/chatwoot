@@ -683,8 +683,14 @@
           "PLACEHOLDER": "Enter welcome message"
         },
         "HANDOFF_MESSAGE": {
-          "LABEL": "Handoff message",
+          "LABEL": "Default handoff message",
+          "DESCRIPTION": "Used for email and other channels, including website chat when no chat handoff message is set.",
           "PLACEHOLDER": "Enter handoff message"
+        },
+        "HANDOFF_MESSAGE_CHAT": {
+          "LABEL": "Website chat handoff message",
+          "DESCRIPTION": "Used for website chat. Leave blank to use the default handoff message.",
+          "PLACEHOLDER": "Enter website chat handoff message"
         },
         "RESOLUTION_MESSAGE": {
           "LABEL": "Resolution Message",

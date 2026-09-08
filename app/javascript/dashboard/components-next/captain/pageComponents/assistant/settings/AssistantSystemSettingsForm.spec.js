@@ -19,6 +19,7 @@ const assistant = {
   config: {
     product_name: 'Chatwoot',
     handoff_message: 'I will connect you with the team.',
+    handoff_message_chat: 'A teammate will reply here shortly.',
     resolution_message: 'I will close this conversation for now.',
     auto_resolve_mode: 'evaluated',
     auto_resolve_after: 75,
