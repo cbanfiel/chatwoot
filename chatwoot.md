@@ -13,7 +13,7 @@ Stood up 2026-09-06. Ported from the Klaviyo Customer Agent, which it replaces.
 | | |
 |---|---|
 | Dashboard | https://customer-service.printoracle.com |
-| Admin login | `chadbanfield@printoracle.com` (user id 2) |
+| Admin login | `support@printoracle.com` (user id 2; manually confirmed 2026-09-08, SuperAdmin and account administrator) |
 | SSH | `gcloud compute ssh customer-service --project teeshirtpalacehosting --zone us-central1-a` |
 
 If gcloud says "Reauthentication failed", run `gcloud auth login` — it can't prompt from
@@ -38,7 +38,12 @@ renewal and interferes with Chatwoot websockets.
 
 ## Layout on the box
 
-Everything lives in `/opt/chatwoot`:
+**The box is deployed from a repo, not edited by hand.** Everything non-stock lives in
+`~/Documents/chatwoot/deploy` (our fork of chatwoot/chatwoot, branch `develop`), and
+`make launch` ships it. Editing files on the VM directly means the next deploy silently
+reverts them; `make diff` from that folder reports any drift. See `deploy/README.md`.
+
+Everything lands in `/opt/chatwoot`:
 
 - `docker-compose.yaml` — 5 services: rails, sidekiq, postgres (pgvector/pg16), redis, caddy.
   Image pinned to `chatwoot/chatwoot:v4.17.1` (not `:latest` — upgrade deliberately, after a
@@ -49,6 +54,11 @@ Everything lives in `/opt/chatwoot`:
   `INSTALLATION_PRICING_PLAN=enterprise`.
 - `Caddyfile` — `customer-service.printoracle.com { reverse_proxy rails:3000 }`
 - `backup.sh` + `/etc/cron.d/chatwoot-backup` — nightly 03:00 `pg_dump`, 7-day retention.
+- `patches/` — our Ruby changes, mounted into rails and sidekiq at
+  `config/initializers/printoracle/`. See "Our patches" below.
+
+`.env` and `backups/` are the only things that live *only* on the server; a deploy never
+reads or overwrites either.
 
 Rails port 3000 is **not** published to the host; Caddy reaches it over the Docker network.
 So `curl localhost:3000` on the VM fails by design — probe the public URL instead.
@@ -61,8 +71,9 @@ Our file uses a top-level `x-base: &base` extension field instead.
 
 ## How Barry is configured
 
-Captain assistant "Barry", account "Print Oracle". Everything below is set in the dashboard
-under Captain, no code.
+Captain assistant "Barry", account "Print Oracle". All of it is data in Postgres, set in the
+dashboard under Captain — the one exception is the per-channel handoff copy, which needs the
+patch described in "Our patches".
 
 - **7 FAQ snippets** ported from the Klaviyo agent — support hours, shipping/payment,
   order tracking, return policy, artwork requirements, TCHAT10 discount rule.
@@ -72,13 +83,42 @@ under Captain, no code.
 - **133 crawled pages** from printoracle.com, embedded with `text-embedding-3-small`.
   (Klaviyo's crawl of the same site failed; Chatwoot's succeeded.)
 - **1 custom tool** — `print_oracle_order_status`, see below.
-- **Handoff message** — "I am getting a teammate to help with this, they will reply here
-  within 24-48 hrs."
+- **Handoff message** — per channel, since the two read very differently:
+  email/API gets "I'm getting a teammate to help with this. They'll reply right here, and
+  you'll get an email too if you step away."; live chat gets "I've made a ticket for this.
+  A teammate will get back to you by the next business day." Chat text is
+  `config['handoff_message_chat']`, which only exists because of our patch — upstream has
+  one handoff message per assistant.
 - **Model** — `gpt-5.5`. Read the model gotcha before changing this.
 
 Verified working: 8/8 handoff test matrix, live order lookup returning FedEx tracking,
 correct inference on questions not explicitly covered (e.g. that an `.AI` file isn't on the
 accepted-formats list).
+
+### Shortcut knowledge review (2026-09-08)
+
+Reviewed the owner's legacy support shortcuts against Barry's 10 existing FAQs,
+133 stored documents, and product/order tools. Added 13 approved FAQs (#11–23)
+with descriptive question titles: quote preparation, company services,
+print-on-demand/dropshipping, combined bulk discounts, artwork help and approval,
+two-sided full-color Zip Tote printing, embroidery digitizing, printing methods,
+maximum DTG size, exact logo dimension requests, rewards, carriers, and local pickup.
+Updated existing discount FAQ #6 with the missing **10% off** detail for TCHAT10.
+
+Skipped duplicate policies/contact information, generic human chat scripts,
+ticket/action-completed claims, the blank-order workaround, and order-first sleeve
+instructions. Kept existing hours (10 AM–5 PM Eastern) and handling time (2–4
+business days); the supplied shortcuts instead said 9 AM and 1–3 days, so those
+conflicting versions were not imported. Product materials, care, and sizing remain
+covered by the existing style tool. Guardrails and response guidelines were unchanged.
+
+Most stored crawls stop at 15,000 characters of navigation, before the page's useful
+body; a listed document alone is not evidence that Barry knows its contents.
+The additions above fill missing facts as directly searchable FAQs. A database
+backup ran before the update. Verified all 23 FAQs, approved status and embeddings
+for all 14 changed records, preservation of the other 9 FAQs, and 13/13 paraphrased
+queries through Captain's actual FAQ lookup tool. No customer messages were sent.
+These checks prove retrieval, not end-to-end model replies.
 
 ## Inboxes
 
@@ -86,19 +126,15 @@ accepted-formats list).
 |---|---|---|---|
 | 1 | Support Test | Api | yes |
 | 2 | Support | Email | yes |
-| 3 | Website Chat | WebWidget | **no** — see below |
+| 3 | Website Chat | WebWidget | yes (since 2026-09-08) |
 
 Inbox 3 was added 2026-09-08 to trial Chatwoot live chat as a Tawk.to replacement.
 Widget token lives in this repo's `.env` as `NEXT_PUBLIC_CHATWOOT_TOKEN`; unset it and
 `components/Chat.tsx` falls back to Tawk. Widget code: `components/ChatwootChat.tsx`.
 
-Barry is deliberately **not** attached to inbox 3. His guardrails and handoff message are
-email-shaped ("they will reply here within 24-48 hrs"), which reads wrong to someone sitting
-in a live chat. Attach him only after writing chat-specific copy:
-
-```ruby
-CaptainInbox.create!(captain_assistant_id: 1, inbox_id: 3)
-```
+Attachment is a row in `captain_inboxes` (there is no `Captain::Inbox` constant — query the
+table directly). Barry's handoff copy is email-shaped, so chat gets its own text via the
+`channel_aware_handoff_message` patch below rather than a second assistant.
 
 Anonymous web visitors have no email on the contact, so `print_oracle_order_status` gets an
 empty `email` and 400s (same root cause as Captain gotcha 3). Logged-in visitors are fine —
@@ -106,6 +142,33 @@ the widget calls `$chatwoot.setUser` with the session email. For anonymous ones,
 on the inbox pre-chat form (asks for email before the first message) or let Barry ask.
 
 ## Integration with this repo
+
+### Style information (live and connected 2026-09-08)
+
+`GET /api/integrations/customer-service/style-info?query=PC54` uses the same
+`x-api-key` / `CUSTOMER_SERVICE_ORDER_STATUS_API_KEY` as order lookup; no customer
+email is needed. It matches style code or manufacturer model number first, then
+product/brand names. PC54 resolves to internal style code AT.
+
+Returns up to five customer-facing styles: model, brand, name, description,
+features, catalog sizes/colors, product link, and structured size-chart values
+with their stored units. Excludes inactive, admin-only, explicitly unpublished
+styles, costs, and production configuration. Multiple matches are marked
+`ambiguous`; missing structured measurements return `sizeChart: null`. Legacy
+HTML-only charts are not interpreted. Catalog colors/sizes are not live inventory.
+
+Validation: `npx vitest run tests/customerServiceStyleInfo.test.ts`. The handler
+was also invoked against the real database and returned PC54's chart in inches.
+
+After deploying the endpoint, run `scripts/configure-chatwoot-style-info.rb` in
+the Chatwoot Rails container. It verifies live PC54 lookup before transactionally
+creating/enabling `print_oracle_style_info` and replacing only the blanket product
+handoff rule, plus adding sizing guidance. It reuses the order tool's auth without
+printing secrets. Failure to verify the endpoint leaves the configuration intact.
+Price quotes, live stock, missing facts, refunds, and defects still hand off.
+Tool #2 (`print_oracle_style_info`) was enabled on 2026-09-08 after the live endpoint passed verification. Barry's product guardrail and sizing guideline were updated. A Captain V2 playground test called the actual tool for "What is the sizing for a PC54 in medium?" and answered with chest 20, length 29, and sleeve from center back 17 3/4 inches; `handoff_tool_called` was false. No customer message was sent. Combined brand/product phrases such as "Gildan hoodie" still need search improvement.
+
+### Order status
 
 Barry calls one endpoint here:
 
@@ -118,6 +181,24 @@ Header: x-api-key: <CUSTOMER_SERVICE_ORDER_STATUS_API_KEY>
 - Route: `app/api/integrations/customer-service/order-status/route.ts`
 - Key: `CUSTOMER_SERVICE_ORDER_STATUS_API_KEY` in `.env`
 - Timeout 10s, 2 retries, configured Chatwoot-side.
+
+**The payload is customer-facing by construction** (changed 2026-09-08). Barry repeats
+whatever it is handed, and it was handing customers raw floor vocabulary: "In Bin: 3",
+"DTF Load", "label Printed", plus pieceIds and SKUs. So the route no longer returns them.
+`functions/orders/customerOrderView.ts` collapses every internal status into one of
+`Awaiting payment` / `Awaiting artwork approval` / `Preparing` / `In production` /
+`Ready to ship` / `Shipped` / `Delivered` / `Canceled`, unknown statuses falling back to
+`Preparing` so a new station name can never leak. Items are grouped into
+`"Duck Camo Trucker Hat, OSFA"` lines with a count instead of one row per piece, and
+pieceId/sku/sellerSku/uniquePo are gone from the select entirely.
+
+Each order also carries `customerSummary`, the finished sentence support should say, plus
+`expectedShipBy` (order date + the style's max handling days, via
+`functions/orderShipByDate.ts`) and `pastExpectedShipDate`.
+
+Open item: `pastExpectedShipDate` is the hook for the late-order case Jerri Hanna hit on
+2026-09-08. Nothing in Captain reads it yet. Add a guardrail requiring handoff when it is
+true rather than letting Barry re-explain that the order is still processing.
 
 Email is required and the lookup is by `userEmail`. Barry passes either the email the
 customer typed in the message or the contact's email on file — whichever it has, and it
@@ -144,6 +225,17 @@ your offer to speak with a human, or a Response Guideline or Guardrail explicitl
 transfer for the matched condition." Default behavior is ask-permission-first. Write
 guardrails as "you MUST transfer to a human immediately using the handoff tool. Do not ask
 permission first."
+
+On 2026-09-08, conversation 109 exposed a false handoff promise: FAQ lookup ran,
+but the handoff tool did not, leaving the conversation pending. Added an active
+guardrail requiring `captain--tools--handoff` before any transfer claim and forbidding
+success claims if the tool fails. Configuration only; no Chatwoot application code changed.
+Verification used a process-local handoff stub to prevent customer messages and
+conversation mutations.
+Five final tool-selection checks passed: two design-location questions clarified,
+damage and explicit human requests called handoff, and a greeting did not.
+These checks verify model tool selection, not end-to-end handoff delivery or a
+guarantee that the model will always follow the guardrail.
 
 **3. `feature_contact_attributes` must be on** or the model never sees the customer's email,
 and any tool needing customer identity gets an empty param (this is why order lookups
@@ -172,6 +264,75 @@ separate private note, agent-only.
 `endpoint_url` via `{{param}}` templating. The embedding column is hard-coded `vector(1536)`,
 so `text-embedding-3-small` only — `text-embedding-3-large` (3072 dims) breaks inserts.
 
+## Our patches
+
+Ruby files in `deploy/patches/`, mounted into rails and sidekiq as
+`config/initializers/printoracle/`. Rails globs `config/initializers/**/*.rb`, so a new
+file there loads on boot with no compose change. Each one uses
+`Rails.application.config.to_prepare` + `prepend`, never a load-time constant edit.
+
+Mounted as a **directory**, not file by file: a file bind-mount keeps the old inode when
+the file is replaced, so a deploy would ship a change the container never sees.
+
+### `imap_lock_to_single_conversation.rb`
+
+`Inbox#lock_to_single_conversation` is honoured by `ConversationBuilder` and the
+WhatsApp/SMS/Facebook/Telegram services, but **not** by email:
+`Imap::ImapMailbox#find_or_create_conversation` calls `Conversation.create!` directly.
+
+Email therefore threads *only* on `In-Reply-To`/`References`. A customer who composes a
+fresh message each time instead of replying gets a new conversation per email, and Barry
+answers each one with no history — on 2026-09-08 one contact generated 20 conversations in
+40 minutes and got contradictory answers plus five separate handoffs. Their inbound mail
+had `subject=""`, `in_reply_to=nil`, `references=[]`; the one message they actually
+replied to threaded correctly.
+
+The patch makes the email path check the flag. Inbox 2 has
+`lock_to_single_conversation: true`. Verified live: messages before the deploy landed in
+conversations 132–136, messages after all landed in 137.
+
+Note `MAILER_INBOUND_EMAIL_DOMAIN` is empty, so there is no `reply+<uuid>@` address as a
+second threading path. Adding one needs an inbound-mail webhook (Postmark/Sendgrid/
+Mailgun), not IMAP — not worth it while the flag covers it.
+
+### `channel_aware_handoff_message.rb`
+
+`handoff_message` is one string per **assistant**
+(`enterprise/app/jobs/captain/conversation/response_builder_job.rb`, and again in
+`enterprise/app/jobs/captain/inbox_pending_conversations_resolution_job.rb`). There is no
+per-inbox override anywhere in 4.17.1 — Chatwoot has per-inbox greeting and out-of-office
+text, but not this. So live chat got the email-shaped copy.
+
+The patch prepends both call sites: WebWidget conversations use
+`config['handoff_message_chat']` when set, every other channel falls through to upstream.
+One assistant, one knowledge base. The alternative was a second assistant with its own
+copy of 23 FAQs, 133 documents and 2 tools to keep in sync.
+
+### Verifying and upgrading
+
+These patches fail **silently**. If upstream renames a method the prepend still loads, the
+override never fires, and behaviour quietly reverts to stock. So every patch has a check in
+`deploy/scripts/verify_patches.rb`, and `make launch` runs it on every deploy. A patch with
+no check is a patch that will rot.
+
+Before bumping the image tag: `make snapshot`, `make backup`, diff the upstream files named
+in each patch header against the new version, then `make launch` and read the verify output.
+
+`channel_aware_handoff_message.rb` touches `enterprise/` code, which is under Chatwoot's
+commercial licence. The licence covers modifications but still requires a paid licence in
+production — see the open item.
+
+## Why patches and not a forked image
+
+We run the stock `chatwoot/chatwoot` image and overlay ~60 lines of Ruby. Building our fork
+into an image instead means compiling Rails and Vue assets: the 2 GB VM cannot do it, an
+Apple Silicon laptop has to cross-build for amd64, and Cloud Build turns a 40 second deploy
+into a ~30 minute one. The fork checkout is still the reference tree — read real upstream
+source there when writing a patch, and diff against it after an upgrade.
+
+If a change ever outgrows what a `prepend` can express cleanly, that is the signal to
+revisit this.
+
 ## Spam — there is no filter
 
 Chatwoot has no spam handling. No scoring, no blocklist, no `Precedence: bulk` /
@@ -198,6 +359,25 @@ filtering ahead of actual spam.
 ---
 
 ## Common operations
+
+From `~/Documents/chatwoot/deploy`:
+
+```bash
+make launch              # ship this folder, recreate rails + sidekiq, verify patches
+make diff                # what the server has that the repo does not
+make verify              # prove the patches are loaded (read-only, sends nothing)
+make logs N=200          # tail rails + sidekiq
+make console             # interactive rails console
+make run FILE=scripts/x.rb   # run a local ruby script against production
+make backup              # DB dump now
+make snapshot            # disk snapshot now
+make ssh                 # shell on the VM
+```
+
+`make launch` restarts the app containers, so chat and email are down for about
+30 seconds. Postgres, Redis and Caddy are left running.
+
+Raw equivalents, for when you are already on the box:
 
 ```bash
 # ssh
@@ -267,97 +447,19 @@ customers.
 - [ ] **Wire `support@printoracle.com`** — needs a real user mailbox (not a Google Group or
       alias — those can't do IMAP), 2-Step Verification on, an app password, and IMAP enabled
       in Gmail settings
-- [ ] **Auto-resolve tuning** — currently `auto_resolve_mode=evaluated` with the 60-minute
-      default, too aggressive for email. Max allowed is 1440 minutes (24h);
-      `MAXIMUM_INACTIVITY_THRESHOLD_MINUTES = 1.day.in_minutes`, so 3 days is not possible.
-      Harmless either way: an incoming message reopens a resolved conversation.
+- [x] **Auto-resolve tuning** — now `auto_resolve_mode=evaluated`, `auto_resolve_after=1440`
+      (the 24h maximum; `MAXIMUM_INACTIVITY_THRESHOLD_MINUTES = 1.day.in_minutes`, so 3 days
+      is not possible). Harmless either way: an incoming message reopens a resolved
+      conversation.
 - [ ] **Agent email signature** — `users.message_signature` is null. Per-agent, set in
       Profile Settings, toggled per channel type. No account-wide footer exists.
-- [ ] **Business hours** on the inbox (Mon-Fri 10-5 ET) so after-hours mail gets the
-      out-of-office message rather than the 24-48h promise
+- [ ] **Business hours** on the inboxes (Mon-Fri 10-5 ET) so after-hours contact gets the
+      out-of-office message. Now sharper than it was: chat's handoff promises "by the next
+      business day" and nothing enforces that, so a Friday night chat is told something the
+      inbox has no hours to back up.
 - [ ] **Second inbox/assistant** for the other company
+- [ ] **Commit `deploy/`** — the folder is untracked on `develop` in the fork. A
+      `printoracle` branch would keep upstream merges clean.
 - [ ] **Cost tuning** — `gpt-5.5` is the priciest tier ($5/$30 per 1M). `gpt-5.4` ($2.50/$15)
       and `gpt-5.4-mini` ($0.75/$4.50) are both registry-known; worth A/B-ing on the same
       question set before volume ramps.
-
-
----
-
-## Follow-up context — 2026-09-08
-
-The sections above were copied from `tsp-prints/docs/chatwoot.md` and include historical setup state. These later observations supersede conflicting details above:
-
-- Live server inspection confirmed Barry is attached to all three inboxes, including Website Chat.
-- The current handoff message is: "I'm getting a teammate to help with this. They'll reply right here, and you'll get an email too if you step away."
-- Auto-resolution is now 1440 minutes; inactivity-resolution messages are disabled.
-- The agent Instructions name was changed from Kai to Barry at the owner's request.
-- Approved FAQ #8 was added and its embedding verified: at checkout, uncheck **Billing Address Same As Shipping** to enter a separate billing address. There are now eight approved FAQ entries.
-- Audit covered 68 conversations / 159 messages. Only seven non-test conversations had public Captain replies. No other prompt changes were authorized or applied.
-
-## Requested fork investigation — 2026-09-08
-
-Scope: investigate (1) Email Id → Email Address and (2) an email blacklist with management UI. Silent handoffs are deferred. No application code or production configuration was changed during this investigation.
-
-Repository: `cbanfiel/chatwoot`, inspected commit `b227f8042`. Its package version says 4.17.1, but this checkout was not verified to be the exact source behind the deployed v4.17.1 Docker image. Investigation worktree: `/Users/chadbanfield/Documents/chatwoot-support-audit`, branch `codex/support-audit`.
-
-### 1. Email field label: existing configuration is sufficient
-
-Settings → Inboxes → Website Chat → Pre Chat Form exposes a Label input for each enabled field. Set the `emailAddress` field label to `Email Address` and save. The widget renders that stored label directly. A fork/rebuild is unnecessary for the existing inbox.
-
-Evidence:
-- `app/javascript/dashboard/routes/dashboard/settings/inbox/PreChatForm/PreChatFields.vue`: editable `item.label` input.
-- `app/javascript/dashboard/routes/dashboard/settings/inbox/PreChatForm/Settings.vue`: saves `channel.pre_chat_form_options.pre_chat_fields`.
-- `app/models/channel/web_widget.rb`: permits label updates; default label is `Email Id`.
-- `app/javascript/widget/components/PreChat/Form.vue`: `getLabel` returns the configured label.
-
-### 2. Email blacklist: reuse contact blocking, but close delivery gaps
-
-Existing UI already offers Contacts → contact → Block Contact / Unblock Contact, plus a Blocked contacts filter. Existing contact create/update APIs accept `blocked`; incoming email reuses account contacts by email. For exact addresses, a dedicated Blocked Emails screen could reuse this data and API rather than introduce a parallel blacklist table. This would retain account-wide contact-block semantics, not email-inbox-only blocking.
-
-Blocking currently makes new conversations resolved and prevents incoming messages reopening resolved conversations. It does not provide a complete no-reply guarantee:
-- The contact block action only updates the contact; it does not resolve an already-pending conversation.
-- Captain scheduling/response eligibility uses conversation pending status without an explicit blocked-contact check.
-- Greeting/out-of-office template hooks have no blocked-contact guard.
-- The email send service has no blocked-contact guard, so existing/manual/queued outgoing messages need an explicit delivery policy.
-
-Recommended first scope: exact email addresses, add/remove/list UI using existing contacts, retain incoming messages, suppress automated replies reliably. A strict prohibition on *all* outbound email also needs enforcement at delivery (including queued messages) and clear UI feedback rather than silently marking an unsent reply successful. Domain patterns and per-inbox rules would require additional scope; they were not implemented.
-
-Evidence:
-- `app/javascript/dashboard/components-next/Contacts/ContactsDetailsLayout.vue`
-- `app/javascript/dashboard/routes/dashboard/contacts/contactFilterItems/index.js`
-- `app/controllers/api/v1/accounts/contacts_controller.rb`
-- `app/mailboxes/mailbox_helper.rb`, `app/builders/contact_inbox_with_contact_builder.rb`
-- `app/models/conversation.rb#determine_conversation_status`, `app/models/message.rb#reopen_conversation`
-- `app/services/message_templates/hook_execution_service.rb`
-- `enterprise/app/services/enterprise/message_templates/hook_execution_service.rb`
-- `enterprise/app/jobs/captain/conversation/response_builder_job.rb`
-- `app/services/email/send_on_email_service.rb`
-
-Validation was source inspection only. Before implementation, cover blocked new and existing conversations, queued replies, greeting/out-of-office messages, unblocking, and normal unblocked delivery. No live test messages were sent.
-
-
-### Style information (live and connected 2026-09-08)
-
-`GET /api/integrations/customer-service/style-info?query=PC54` uses the same
-`x-api-key` / `CUSTOMER_SERVICE_ORDER_STATUS_API_KEY` as order lookup; no customer
-email is needed. It matches style code or manufacturer model number first, then
-product/brand names. PC54 resolves to internal style code AT.
-
-Returns up to five customer-facing styles: model, brand, name, description,
-features, catalog sizes/colors, product link, and structured size-chart values
-with their stored units. Excludes inactive, admin-only, explicitly unpublished
-styles, costs, and production configuration. Multiple matches are marked
-`ambiguous`; missing structured measurements return `sizeChart: null`. Legacy
-HTML-only charts are not interpreted. Catalog colors/sizes are not live inventory.
-
-Validation: `npx vitest run tests/customerServiceStyleInfo.test.ts`. The handler
-was also invoked against the real database and returned PC54's chart in inches.
-
-After deploying the endpoint, run `scripts/configure-chatwoot-style-info.rb` in
-the Chatwoot Rails container. It verifies live PC54 lookup before transactionally
-creating/enabling `print_oracle_style_info` and replacing only the blanket product
-handoff rule, plus adding sizing guidance. It reuses the order tool's auth without
-printing secrets. Failure to verify the endpoint leaves the configuration intact.
-Price quotes, live stock, missing facts, refunds, and defects still hand off.
-Tool #2 (`print_oracle_style_info`) was enabled on 2026-09-08 after the live endpoint passed verification. Barry's product guardrail and sizing guideline were updated. A Captain V2 playground test called the actual tool for "What is the sizing for a PC54 in medium?" and answered with chest 20, length 29, and sleeve from center back 17 3/4 inches; `handoff_tool_called` was false. No customer message was sent. Combined brand/product phrases such as "Gildan hoodie" still need search improvement.
-
