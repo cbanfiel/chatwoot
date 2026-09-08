@@ -82,3 +82,32 @@ the override never fires, and behaviour quietly reverts. So:
 
 `enterprise/` code is under Chatwoot's commercial licence, which covers modifications
 but still requires a paid licence in production. That is an open item.
+
+## Website chat handoff field release
+
+Production uses `printoracle/chatwoot:v4.17.1-handoff-b0d0c94d9`, built on the VM
+from the stock v4.17.1 image. The source is commit `b0d0c94d9` on
+`codex/chat-handoff-release`, based on the exact deployed upstream commit
+`b354a9550e1fb59fa537a9c384232cb076213e72`. Do not build this overlay from develop:
+its frontend includes unrelated changes from after v4.17.1.
+
+The dashboard now has Default handoff message and Website chat handoff message
+under Captain assistant system settings. Blank chat copy uses the default.
+The existing `channel_aware_handoff_message.rb` patch must remain mounted.
+
+To rebuild, install the release checkout's locked pnpm dependencies and run
+`RAILS_ENV=production pnpm exec vite build`. Copy `Dockerfile.handoff` from this
+folder into that checkout's `deploy/` folder. Transfer only `public/vite/`, the
+three source files listed in the Dockerfile, and the Dockerfile to a build
+folder on the VM. Build there:
+
+```sh
+sudo docker build -f deploy/Dockerfile.handoff \
+  --build-arg SOURCE_REVISION=b0d0c94d9 \
+  -t printoracle/chatwoot:v4.17.1-handoff-b0d0c94d9 .
+```
+
+Then run `make launch` from this deployment folder. The custom image is stored
+locally on the VM; a replacement VM needs it rebuilt before launch.
+To roll back this release, set the compose image to `chatwoot/chatwoot:v4.17.1`
+and run `make launch`. No database migration is involved.

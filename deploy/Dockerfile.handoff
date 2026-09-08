@@ -1,0 +1,9 @@
+# Build from codex/chat-handoff-release after pnpm exec vite build.
+# This overlay must use the v4.17.1 source, matching the base image.
+FROM chatwoot/chatwoot:v4.17.1
+COPY public/vite/ /app/public/vite/
+COPY app/javascript/dashboard/components-next/captain/pageComponents/assistant/settings/AssistantSystemSettingsForm.vue /app/app/javascript/dashboard/components-next/captain/pageComponents/assistant/settings/AssistantSystemSettingsForm.vue
+COPY app/javascript/dashboard/i18n/locale/en/integrations.json /app/app/javascript/dashboard/i18n/locale/en/integrations.json
+COPY enterprise/app/controllers/api/v1/accounts/captain/assistants_controller.rb /app/enterprise/app/controllers/api/v1/accounts/captain/assistants_controller.rb
+ARG SOURCE_REVISION
+RUN test -n "$SOURCE_REVISION" && printf '%s\n' "$SOURCE_REVISION" > /app/.git_sha
