@@ -1,0 +1,79 @@
+# Chatwoot for Print Oracle. Deployed with `make launch` from this folder.
+#
+# Do not add a `base:` service. Chatwoot's published compose uses one as a YAML
+# anchor, which with `restart: always` becomes a container that restart-loops
+# forever. This file uses a top-level `x-base:` extension field instead.
+#
+# The image is pinned. Upgrade deliberately, after a disk snapshot, and re-run
+# the patch verification in deploy/README.md - patches fail silently.
+x-base: &base
+  image: chatwoot/chatwoot:v4.17.1
+  env_file: .env
+  volumes:
+    - storage_data:/app/storage
+    # Our Ruby patches. Rails globs config/initializers/**/*.rb, so every file in
+    # ./patches loads on boot. Mounted as a directory, not per-file, so replacing
+    # a patch on deploy does not leave the container holding the old inode.
+    - ./patches:/app/config/initializers/printoracle:ro
+  restart: always
+
+services:
+  rails:
+    <<: *base
+    depends_on: [postgres, redis]
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+    entrypoint: docker/entrypoints/rails.sh
+    command: ['bundle', 'exec', 'rails', 's', '-p', '3000', '-b', '0.0.0.0']
+    mem_limit: 900m
+
+  sidekiq:
+    <<: *base
+    depends_on: [postgres, redis]
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+    command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+    mem_limit: 700m
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: always
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=chatwoot
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    mem_limit: 400m
+
+  redis:
+    image: redis:alpine
+    restart: always
+    command: ["sh", "-c", "redis-server --requirepass \"$REDIS_PASSWORD\""]
+    env_file: .env
+    volumes:
+      - redis_data:/data
+    mem_limit: 120m
+
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [rails]
+
+volumes:
+  storage_data:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
