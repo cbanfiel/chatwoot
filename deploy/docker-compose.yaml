@@ -7,7 +7,7 @@
 # The image is pinned. Upgrade deliberately, after a disk snapshot, and re-run
 # the patch verification in deploy/README.md - patches fail silently.
 x-base: &base
-  image: printoracle/chatwoot:v4.17.1-handoff-b0d0c94d9
+  image: printoracle/chatwoot:v4.17.1-status-all-df2213471
   env_file: .env
   volumes:
     - storage_data:/app/storage
