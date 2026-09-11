@@ -65,19 +65,21 @@ ooo = MessageTemplates::Template::OutOfOffice
 check.call('OutOfOffice.perform_if_applicable is patched', false,
            ooo.method(:perform_if_applicable).owner == ooo.singleton_class)
 
-if email && email.inbox.captain_assistant&.config&.dig('handoff_message').present?
-  inbox = email.inbox
+handoff_inbox = Inbox.all.find { |i| i.captain_assistant&.config&.dig('handoff_message').present? }
+handoff_conversation = handoff_inbox&.conversations&.last
+if handoff_conversation
+  inbox = handoff_conversation.inbox
   inbox.define_singleton_method(:out_of_office?) { true }
   inbox.define_singleton_method(:out_of_office_message) { 'verify' }
   performed = false
   ooo.define_singleton_method(:new) { |**| Object.new.tap { |o| o.define_singleton_method(:perform) { performed = true } } }
   before = Message.count
 
-  ooo.perform_if_applicable(email)
+  ooo.perform_if_applicable(handoff_conversation)
   check.call('custom handoff copy suppresses the out-of-office replay', false, performed)
 
   inbox.captain_assistant.config['handoff_message'] = ''
-  ooo.perform_if_applicable(email)
+  ooo.perform_if_applicable(handoff_conversation)
   check.call('stock handoff copy still sends the out-of-office replay', true, performed)
 
   ooo.singleton_class.send(:remove_method, :new)
