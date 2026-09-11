@@ -68,6 +68,7 @@ never sees.
 |---|---|---|
 | `imap_lock_to_single_conversation.rb` | `Imap::ImapMailbox#find_or_create_conversation` creates a new conversation for any mail without `In-Reply-To`/`References`, ignoring the inbox's `lock_to_single_conversation` flag | honour the flag, so a customer who composes a fresh email every time stays in one thread instead of spawning one per message |
 | `channel_aware_handoff_message.rb` | one `handoff_message` per assistant, so live chat gets the email-shaped copy | WebWidget conversations use `config['handoff_message_chat']` when set; every other channel is untouched |
+| `skip_out_of_office_on_custom_handoff.rb` | every Captain handoff replays the inbox out-of-office template, so after hours the customer gets the handoff message and the out-of-office message back to back | skip the replay when the assistant has its own handoff copy (default or website chat); stock copy still gets it |
 
 ## Upgrading Chatwoot
 

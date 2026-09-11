@@ -60,5 +60,29 @@ if assistant && chat && email
   check.call('no message created while checking', 0, Message.count - before)
 end
 
+# --- skip_out_of_office_on_custom_handoff.rb
+ooo = MessageTemplates::Template::OutOfOffice
+check.call('OutOfOffice.perform_if_applicable is patched', false,
+           ooo.method(:perform_if_applicable).owner == ooo.singleton_class)
+
+if email && email.inbox.captain_assistant&.config&.dig('handoff_message').present?
+  inbox = email.inbox
+  inbox.define_singleton_method(:out_of_office?) { true }
+  inbox.define_singleton_method(:out_of_office_message) { 'verify' }
+  performed = false
+  ooo.define_singleton_method(:new) { |**| Object.new.tap { |o| o.define_singleton_method(:perform) { performed = true } } }
+  before = Message.count
+
+  ooo.perform_if_applicable(email)
+  check.call('custom handoff copy suppresses the out-of-office replay', false, performed)
+
+  inbox.captain_assistant.config['handoff_message'] = ''
+  ooo.perform_if_applicable(email)
+  check.call('stock handoff copy still sends the out-of-office replay', true, performed)
+
+  ooo.singleton_class.send(:remove_method, :new)
+  check.call('no message created while checking', 0, Message.count - before)
+end
+
 puts failures.empty? ? "\nALL CHECKS PASSED" : "\n#{failures.length} FAILED:\n" + failures.join("\n")
 exit(failures.empty? ? 0 : 1)

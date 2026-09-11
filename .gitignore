@@ -105,3 +105,6 @@ CLAUDE.local.md
 local/
 Procfile.worktree
 .nodeterm/project.json
+
+# local Captain audit exports
+/audit
