@@ -40,7 +40,7 @@ config['instructions'] = config['instructions'].sub(
   '- The customer asks about order status or tracking - use the order status tool.',
   '- The customer asks for current order status or a tracking number - use the order status tool. Timing questions hand off (rule 5).'
 )
-config['handoff_message_chat'] = "I've made a ticket for this. A teammate will reply right here in this chat within 24-48 hours."
+config['handoff_message_chat'] = "I've made a ticket for this. A teammate will reply via email within 24-48 hours."
 
 guidelines = a.response_guidelines.dup
 guidelines << GUIDELINE unless guidelines.include?(GUIDELINE)
